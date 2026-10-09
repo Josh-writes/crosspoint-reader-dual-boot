@@ -1,56 +1,34 @@
-name: Compile Release
+name: Build and Release
 
-# Build and attach firmware only after a release is published. The release tag
-# supplies both the source revision and the version in each asset name.
+# Dual-boot pipeline: build the x4 (gh_release) firmware on a version tag,
+# publish a standalone merged binary as a GitHub Release, and push the raw
+# app image to the typeslate website for the dual-boot flasher.
+# Only the gh_release (x3/x4) env is built — MicroSlate is x4-only for now.
 
 on:
-  release:
-    types: [published]
+  push:
+    tags:
+      - 'v*'
 
 permissions:
-  contents: read
+  contents: write
 
 jobs:
-  build-release:
+  build:
     runs-on: ubuntu-latest
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          - release_env: gh_release
-            rc_env: gh_release_rc
-            device: x3-x4
-          - release_env: sticky-gh_release
-            rc_env: sticky-gh_release_rc
-            device: sticky
-          - release_env: x4pro-gh_release
-            rc_env: x4pro-gh_release_rc
-            device: x4pro
-          - release_env: x4c-gh_release
-            rc_env: x4c-gh_release_rc
-            device: x4c
-          - release_env: papermono-gh_release
-            rc_env: papermono-gh_release_rc
-            device: papermono
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v4
         with:
-          ref: ${{ github.event.release.tag_name }}
           submodules: recursive
 
-      - name: Validate release version
-        env:
-          RELEASE_TAG: ${{ github.event.release.tag_name }}
-        run: |
-          version="${RELEASE_TAG#v}"
-          configured_version="$(sed -n 's/^version = //p' platformio.ini | head -n1)"
-          if [ "${{ github.event.release.prerelease }}" = "true" ]; then
-            test "$version" = "${configured_version}rc"
-          else
-            test "$version" = "$configured_version"
-          fi
+      - uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cache/pip
+            ~/.platformio/.cache
+          key: ${{ runner.os }}-pio-${{ hashFiles('platformio.ini') }}
 
-      - uses: actions/setup-python@v6
+      - uses: actions/setup-python@v5
         with:
           python-version: '3.13'
 
@@ -72,64 +50,48 @@ jobs:
             "reedsolo>=1.5.3,<1.8" "esp-idf-size>=2.0.0" "esp-coredump>=1.14.0"
 
       - name: Pin pioarduino core inside the platform penv
-        env:
-          PIO_ENV: ${{ github.event.release.prerelease && matrix.rc_env || matrix.release_env }}
         run: |
           set -euo pipefail
           # Envs with custom_sdkconfig run a nested `pio run` from
           # ~/.platformio/penv. Keep that core on the same version as the outer core.
           # See https://github.com/pioarduino/platform-espressif32/issues/529
-          pio pkg install -e "$PIO_ENV"
+          pio pkg install -e gh_release
           uv pip install --python ~/.platformio/penv/bin/python "pioarduino==6.1.19"
           ~/.platformio/penv/bin/pio --version
 
       - name: Build CrossPoint
-        env:
-          PIO_ENV: ${{ github.event.release.prerelease && matrix.rc_env || matrix.release_env }}
-        run: CROSSPOINT_RC_HASH="$(git rev-parse --short=7 HEAD)" pio run -e "$PIO_ENV" -j1
+        run: CROSSPOINT_RC_HASH="$(git rev-parse --short=7 HEAD)" pio run -e gh_release -j1
 
-      - name: Prepare firmware asset
-        id: asset
-        env:
-          PIO_ENV: ${{ github.event.release.prerelease && matrix.rc_env || matrix.release_env }}
-          RELEASE_TAG: ${{ github.event.release.tag_name }}
+      - name: Merge standalone binary
         run: |
-          version="${RELEASE_TAG#v}"
-          asset="crosspoint-${version}-${{ matrix.device }}.bin"
-          cp ".pio/build/${PIO_ENV}/firmware.bin" "$asset"
-          echo "name=$asset" >> "$GITHUB_OUTPUT"
+          pip install esptool
+          BOOT_APP0=$(find ~/.platformio -name "boot_app0.bin" | head -1)
+          esptool.py --chip esp32c3 merge_bin \
+            --flash_mode dio --flash_size 16MB \
+            -o crosspoint-${{ github.ref_name }}.bin \
+            0x0     .pio/build/gh_release/bootloader.bin \
+            0x8000  .pio/build/gh_release/partitions.bin \
+            0xe000  "$BOOT_APP0" \
+            0x10000 .pio/build/gh_release/firmware.bin
 
-      - name: Stage firmware asset
-        uses: actions/upload-artifact@v6
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
         with:
-          name: ${{ steps.asset.outputs.name }}
-          path: ${{ steps.asset.outputs.name }}
-          if-no-files-found: error
-          retention-days: 1
-          compression-level: 0
+          files: crosspoint-${{ github.ref_name }}.bin
+          generate_release_notes: true
 
-  publish-release:
-    needs: build-release
-    runs-on: ubuntu-latest
-    permissions:
-      contents: write
-    steps:
-      - name: Download firmware assets
-        uses: actions/download-artifact@v4
-        with:
-          path: dist
-          pattern: crosspoint-*.bin
-          merge-multiple: true
-
-      - name: Attach firmware assets
+      - name: Publish to typeslate website
         env:
-          GH_TOKEN: ${{ github.token }}
-          RELEASE_TAG: ${{ github.event.release.tag_name }}
+          WEBSITE_PAT: ${{ secrets.WEBSITE_PAT }}
         run: |
-          version="${RELEASE_TAG#v}"
-          for device in x3-x4 sticky x4pro x4c papermono; do
-            test -f "dist/crosspoint-${version}-${device}.bin"
-          done
-          test "$(find dist -maxdepth 1 -type f -name 'crosspoint-*.bin' | wc -l)" -eq 5
-          gh release upload "$RELEASE_TAG" dist/crosspoint-*.bin \
-            --repo "$GITHUB_REPOSITORY" --clobber
+          git clone https://x-access-token:${WEBSITE_PAT}@github.com/josh-websites/typeslate-website.git website
+          mkdir -p website/tools/crosspoint/firmware
+          cp crosspoint-${{ github.ref_name }}.bin website/tools/crosspoint/firmware/latest.bin
+          cp .pio/build/gh_release/firmware.bin website/tools/crosspoint/firmware/app.bin
+          echo '{"version":"${{ github.ref_name }}"}' > website/tools/crosspoint/firmware/version.json
+          cd website
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add tools/crosspoint/firmware/
+          git commit -m "Update CrossPoint firmware to ${{ github.ref_name }}"
+          git push

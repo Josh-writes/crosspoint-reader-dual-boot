@@ -3,6 +3,7 @@
 #include <vector>
 
 #include "./FileBrowserActivity.h"
+#include "OtaApps.h"
 #include "RecentBooksStore.h"
 #include "activities/Activity.h"
 #include "components/CoverGridHomeUi.h"
@@ -14,6 +15,8 @@ class HomeActivity final : public Activity {
   std::unique_ptr<CoverGridHomeUi> coverGridUi;
   ButtonNavigator buttonNavigator;
   int selectorIndex = 0;
+  OtaAppEntry otaApps[MAX_OTA_APPS] = {};
+  int otaAppCount = 0;
   bool recentsLoading = false;
   bool recentsLoaded = false;
   bool firstRenderDone = false;

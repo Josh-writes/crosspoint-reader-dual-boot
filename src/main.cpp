@@ -26,6 +26,7 @@
 #include "CrossPointSettings.h"
 #include "CrossPointState.h"
 #include "KOReaderCredentialStore.h"
+#include "OtaApps.h"
 #include "MappedInputManager.h"
 #include "OpdsServerStore.h"
 #include "RecentBooksStore.h"
@@ -378,6 +379,7 @@ void setup() {
 
   gpio.begin();
   powerManager.begin();
+  registerOtaAppName("CrossPoint");
 
   const auto wakeupReason = gpio.getWakeupReason();
   // Sample the wake hold now — a click wake is released within milliseconds of

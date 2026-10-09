@@ -26,7 +26,7 @@
 #include "fontIds.h"
 
 int HomeActivity::getMenuItemCount() const {
-  int count = 4;  // File Browser, Library, File transfer, Settings
+  int count = 4 + otaAppCount;  // File Browser, Library, File transfer, Settings, OTA apps
   if (!recentBooks.empty()) {
     count += recentBooks.size();
   }
@@ -229,6 +229,7 @@ void HomeActivity::onEnter() {
   Activity::onEnter();
 
   hasOpdsServers = OPDS_STORE.hasServers();
+  otaAppCount = detectOtaApps(otaApps, MAX_OTA_APPS);
 
   const auto& metrics = UITheme::getInstance().getMetrics();
   if (UITheme::getInstance().hasCoverGridHome()) {
@@ -322,8 +323,14 @@ void HomeActivity::loop() {
       case HomeMenuItem::SETTINGS_MENU:
         onSettingsOpen();
         break;
-      default:
+      default: {
+        // Dynamically-detected OTA apps are appended after the fixed menu items.
+        const int otaIdx = menuIndex - menuItemToIndex(HomeMenuItem::SETTINGS_MENU, hasOpdsServers) - 1;
+        if (otaIdx >= 0 && otaIdx < otaAppCount) {
+          switchToOtaApp(otaApps[otaIdx].partitionSubtype);
+        }
         break;
+      }
     }
   };
 
@@ -520,6 +527,11 @@ void HomeActivity::render(RenderLock&&) {
     // Insert Continue Reading at the top if enabled in theme
     menuItems.insert(menuItems.begin(), tr(STR_CONTINUE_READING));
     menuIcons.insert(menuIcons.begin(), Book);
+  }
+
+  for (int i = 0; i < otaAppCount; i++) {
+    menuItems.push_back(otaApps[i].name);
+    menuIcons.push_back(Text);
   }
 
   GUI.drawButtonMenu(
