@@ -9,6 +9,10 @@ on:
   push:
     tags:
       - 'v*'
+  # Manual "Run workflow" button: builds and uploads the binaries as a private
+  # downloadable artifact for flash-testing, WITHOUT creating a GitHub Release
+  # or publishing to the website. Those steps are gated to tag pushes only.
+  workflow_dispatch:
 
 permissions:
   contents: write
@@ -74,13 +78,29 @@ jobs:
             0xe000  "$BOOT_APP0" \
             0x10000 .pio/build/gh_release/firmware.bin
 
+      - name: Stage binaries for download
+        run: |
+          mkdir -p dist
+          cp crosspoint-${{ github.ref_name }}.bin dist/
+          # Raw app image — this is what gets written into the dual-boot OTA slot.
+          cp .pio/build/gh_release/firmware.bin dist/crosspoint-app.bin
+
+      - name: Upload build artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: crosspoint-firmware-${{ github.ref_name }}
+          path: dist/
+          if-no-files-found: error
+
       - name: Create GitHub Release
+        if: startsWith(github.ref, 'refs/tags/')
         uses: softprops/action-gh-release@v2
         with:
           files: crosspoint-${{ github.ref_name }}.bin
           generate_release_notes: true
 
       - name: Publish to typeslate website
+        if: startsWith(github.ref, 'refs/tags/')
         env:
           WEBSITE_PAT: ${{ secrets.WEBSITE_PAT }}
         run: |
